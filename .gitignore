@@ -1,0 +1,43 @@
+# Visual Studio
+.vs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.user
+*.aps
+*.exe
+*.obj
+*.pdb
+*.res
+*.log
+*.tlog
+*.recipe
+*.ilk
+*.manifest
+
+# Temporary/Scratch
+tmp/
+.gemini/
+antigravity/
+
+# Metadata
+task.md
+implementation_plan.md
+walkthrough.md
+research_notes.md
+analysis_results.md
+experiment_results.md
+metadata.json
+artifacts/
+brain/
+scratch/
+system_generated/
+ conversation_summaries.md
+ current_state.md
+ memory.json
+ planning_mode.md
+ persistent_context.md
+ conversation_logs/
+ knowledge/
+ .antigravityignore
