@@ -1,20 +1,36 @@
 @echo off
-REM SessionGuard Premium Build Script (Multi-file)
-REM Run from "Developer Command Prompt for VS"
+REM Don't Reboot 11 build script
+REM Run from "x64 Native Tools Command Prompt for VS"
 
 echo Building Don't Reboot 11...
 
 rc /v resources\dontreboot11.rc
-cl /W4 /O2 /MT /DUNICODE /D_UNICODE src\main.cpp src\NotificationWindow.cpp src\RebootMonitor.cpp resources\dontreboot11.res /I include /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup USER32.lib SHELL32.lib GDI32.lib COMCTL32.lib OLE32.lib OLEAUT32.lib
+if %ERRORLEVEL% NEQ 0 goto :failed
+
+cl /W4 /O2 /MT /EHsc /DUNICODE /D_UNICODE /std:c++20 ^
+  src\main.cpp ^
+  src\NotificationWindow.cpp ^
+  src\RebootMonitor.cpp ^
+  src\OrchestratorProtector.cpp ^
+  src\UpdatePolicyManager.cpp ^
+  src\Diagnostics.cpp ^
+  resources\dontreboot11.res ^
+  /I include ^
+  /link /SUBSYSTEM:WINDOWS /ENTRY:wWinMainCRTStartup ^
+  USER32.lib SHELL32.lib GDI32.lib COMCTL32.lib OLE32.lib OLEAUT32.lib ^
+  ADVAPI32.lib TDH.lib RUNTIMEOBJECT.lib
 
 if %ERRORLEVEL% EQU 0 (
     echo.
-    echo Build Successful: main.exe
-    move main.exe dontreboot11.exe
-    mt.exe -manifest resources\SessionGuard.manifest -outputresource:dontreboot11.exe;#1
-    del *.obj resources\dontreboot11.res
-) else (
-    echo.
-    echo Build Failed.
+    echo Build Successful: dontreboot11.exe
+    move /Y main.exe dontreboot11.exe >nul 2>&1
+    del *.obj resources\dontreboot11.res 2>nul
+    goto :done
 )
-pause
+
+:failed
+echo.
+echo Build Failed.
+exit /b 1
+
+:done

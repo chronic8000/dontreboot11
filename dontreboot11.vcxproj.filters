@@ -24,6 +24,15 @@
     <ClCompile Include="src\RebootMonitor.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\OrchestratorProtector.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\UpdatePolicyManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Diagnostics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\NotificationWindow.h">
@@ -32,18 +41,22 @@
     <ClInclude Include="include\RebootMonitor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\OrchestratorProtector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\UpdatePolicyManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\Diagnostics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="resources\resource.h">
       <Filter>Resource Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="resources\SessionGuard.rc">
+    <ResourceCompile Include="resources\dontreboot11.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="resources\SessionGuard.manifest">
-      <Filter>Resource Files</Filter>
-    </None>
   </ItemGroup>
 </Project>

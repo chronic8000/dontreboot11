@@ -6,7 +6,8 @@ class NotificationWindow {
 public:
     enum NotificationType {
         TYPE_INFO,
-        TYPE_ALERT
+        TYPE_ALERT,
+        TYPE_CONSENT
     };
 
     static void Show(const std::wstring& title, const std::wstring& message, NotificationType type = TYPE_INFO);

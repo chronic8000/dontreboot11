@@ -1,39 +1,57 @@
 # Don't Reboot 11
 
-**Don't Reboot 11** is a high-fidelity, modular Win32 interdiction appliance designed to structurally dismantle the forced reboot mechanisms of **Windows 11 25H2 (April 2026 "Moment" Build)**.
+**Don't Reboot 11** is a deterministic, user-authoritative reboot permission layer for **Windows 11**. It blocks automatic update reboots while letting you pause updates through official organization policy controls—and turn those controls off again from the system tray.
 
-Unlike common shutdown blockers, Don't Reboot 11 operates at the kernel and orchestration level, seizing control of the Windows Update servicing stack to guarantee absolute system uptime.
+## What it does
 
-## 🛡️ The Triple-Lock Interdiction System
+1. **Reboot gatekeeper (always on while running)**  
+   Uses `BlockAutomaticRebootAsync` (WinRT) with a 60-second watchdog so Windows cannot restart without your consent.
 
-Don't Reboot 11 uses a multi-layered defensive strategy to ensure no update triggers an uncommanded reboot:
+2. **Organization update control (tray toggle)**  
+   Applies Microsoft-supported policies under `HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate`:
+   - Pause feature and quality updates (up to 35 days)
+   - Defer updates (35 / 30 days)
+   - `NoAutoRebootWithLoggedOnUsers`
+   - `AUOptions = 3` (download automatically, notify before install)
 
-1.  **Registered System Administration (WinRT)**:
-    Don't Reboot 11 registers as a `WindowsUpdateAdministrator` via C++/WinRT. By placing a kernel-level `BlockAutomaticRebootAsync` lock, Don't Reboot 11 demotes the native OS orchestrator, programmatically forbidding the system from rebooting without explicit permission.
+   It deliberately does **not** set compliance **deadline** policies (`ConfigureDeadlineFor*`), which cause *"completed at a time selected by your organisation"* and grey out **Download & install**.
 
-2.  **ETW Preemptive Radar**:
-    An active **Event Tracing for Windows (ETW)** consumer monitors the `Microsoft-Windows-UpdateOrchestrator` provider in real-time. Upon detecting Event ID 47 (Reboot notification scheduled), Don't Reboot 11 executes a preemptive strike, terminating `MusNotification.exe`, `MusNotificationUx.exe`, and `UpdateNotificationMgr.exe` before a prompt can ever appear.
+3. **Restore control**  
+   **Restore Windows Update control** removes Don't Reboot 11 policies, clears the Windows Update `GPCache`, and runs `gpupdate` so Settings returns to normal.
 
-3.  **Task Scheduler Hijacking (NTFS DACL Subversion)**:
-    Don't Reboot 11 modifies the Security Descriptors (DACLs) of the critical `UpdateOrchestrator\Reboot` scheduled task. By injecting a **DENY** entry for the `SYSTEM` account, Don't Reboot 11 structurally prevents the OS from initializing the reboot flow via the Task Scheduler.
+## Tray menu (right-click the shield icon)
 
-## 🧠 Intelligence & Detection
+| Item | Action |
+|------|--------|
+| **Pause Windows Update (Organization control)** | Toggle pause/defer policies on or off |
+| **Restore Windows Update control** | Emergency cleanup if updates stay locked |
+| **Start with Windows** | Autostart |
+| **Exit** | Quit the app |
 
-- **Moment Build Calibration**: Purpose-built for 25H2, detecting "Calendar Flyout" pauses via ISO 8601 strings and 64-bit QWORD registry ticks.
-- **Instant Recognition**: Utilizes kernel-level **Registry Change Notifications** (`RegNotifyChangeKeyValue`) to update its status instantly when you toggle a pause or a policy is updated.
-- **Deep Status Sweep**: Monitors 6 critical hives—including CBS Staging, WUA State, and Enterprise Policy—to distinguish between "Ghost" notifications and legitimate reboot threats.
+## If updates are stuck (your screenshot)
 
-## 🛠️ Technical Specifications
+1. Run `dontreboot11.exe` **as Administrator**.
+2. Right-click the tray icon → **Restore Windows Update control**.
+3. Uncheck **Pause Windows Update** if it is still checked.
+4. Open **Settings → Windows Update** — **Download & install** should be enabled again.
 
-- **Performance**: Ultra-lightweight C++20 core (< 1.5MB RAM footprint).
-- **Stealth**: Runs as a tray-resident service with no taskbar presence.
-- **Reliability**: Zero-latency response with zero idle CPU utilization.
-- **Requirements**: Requires **Administrator Privileges** to deploy WinRT locks and Task Security subversion.
-- **Persistence**: Optional "Start with Windows" toggle via system tray.
+Stale policy can also live in `HKLM\SOFTWARE\Microsoft\WindowsUpdate\UpdatePolicy\GPCache`; the restore action deletes that tree.
 
-## Usage
+## Build
 
-Simply run `dontreboot11.exe` as Administrator. Use the system tray icon to monitor real-time update status. When updates are paused, the app will stay in "Safe" mode; when an update is active or pending, it will engage its "Protected" interdiction layers.
+From **x64 Native Tools Command Prompt for VS**:
+
+```bat
+build.bat
+```
+
+Or open `dontreboot11.sln` in Visual Studio (requires Administrator manifest).
+
+## Requirements
+
+- Windows 11 Pro or higher (policy registry paths)
+- Run as **Administrator**
 
 ---
-*Architected for the preservation of deep-work and mission-critical sessions.*
+
+*Clean control for mission-critical sessions—pause updates when you need to, restore control when you don't.*

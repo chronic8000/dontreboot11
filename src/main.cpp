@@ -6,24 +6,22 @@
 #include "../include/NotificationWindow.h"
 #include "../include/RebootMonitor.h"
 #include "../include/OrchestratorProtector.h"
+#include "../include/UpdatePolicyManager.h"
+#include "../include/Diagnostics.h"
 #include "../resources/resource.h"
 
-// Modern manifest-less Common Controls inclusion
 #pragma comment(linker,"\"/manifestdependency:type='win32' \
 name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
 processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #pragma comment(lib, "comctl32.lib")
 
-// User-defined messages
 #define WM_TRAY_MSG (WM_USER + 1)
 #define WM_REBOOT_STATUS_CHANGE (WM_USER + 2)
 
 #define APP_TITLE L"Don't Reboot 11"
-#define BLOCK_REASON_NORMAL L"Don't Reboot 11 is protecting your session."
-#define BLOCK_REASON_PENDING L"WARNING: A critical reboot is pending! Don't Reboot 11 is intercepting."
+#define BLOCK_REASON_NORMAL L"Don't Reboot 11 is running (automatic restarts blocked)."
 
-// Registry Autostart Helpers
 const wchar_t* AUTOSTART_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const wchar_t* AUTOSTART_VALUE = L"DontReboot11";
 
@@ -52,10 +50,59 @@ void SetAutoStart(bool enable) {
     }
 }
 
+bool IsElevated() {
+    BOOL isAdmin = FALSE;
+    PSID adminGroup = nullptr;
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    if (AllocateAndInitializeSid(&ntAuthority, 2,
+            SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+            0, 0, 0, 0, 0, 0, &adminGroup)) {
+        CheckTokenMembership(nullptr, adminGroup, &isAdmin);
+        FreeSid(adminGroup);
+    }
+    return isAdmin == TRUE;
+}
 
-bool g_rebootPending = false;
+void RelaunchElevated(HWND hwnd, const wchar_t* params) {
+    wchar_t path[MAX_PATH];
+    if (GetModuleFileNameW(NULL, path, MAX_PATH) == 0) return;
+
+    SHELLEXECUTEINFOW sei = { 0 };
+    sei.cbSize = sizeof(sei);
+    sei.lpVerb = L"runas";
+    sei.lpFile = path;
+    sei.lpParameters = params;
+    sei.hwnd = hwnd;
+    sei.nShow = SW_SHOWNORMAL;
+
+    if (!ShellExecuteExW(&sei)) {
+        NotificationWindow::Show(L"Elevation failed",
+            L"Could not elevate to restore Windows Update control.",
+            NotificationWindow::TYPE_ALERT);
+    }
+}
+
+bool g_userAuthorizedReboot = false;
+
+std::wstring PolicyResultMessage(UpdatePolicyManager::PolicyResult r) {
+    switch (r) {
+    case UpdatePolicyManager::PolicyResult::Ok:
+        return L"Done.";
+    case UpdatePolicyManager::PolicyResult::AccessDenied:
+        return L"Access denied. Right-click dontreboot11.exe and Run as administrator.";
+    default:
+        return L"Registry update failed.";
+    }
+}
 
 NOTIFYICONDATAW nid = { 0 };
+
+void RefreshTrayIcon(HWND hwnd) {
+    UNREFERENCED_PARAMETER(hwnd);
+    nid.hIcon = LoadIcon(NULL, IDI_SHIELD);
+    wcscpy_s(nid.szTip, APP_TITLE);
+    Shell_NotifyIconW(NIM_MODIFY, &nid);
+}
 
 void SetupTray(HWND hwnd) {
     nid.cbSize = sizeof(NOTIFYICONDATAW);
@@ -64,16 +111,10 @@ void SetupTray(HWND hwnd) {
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_GUID;
     nid.uCallbackMessage = WM_TRAY_MSG;
     nid.hIcon = LoadIconW(GetModuleHandle(NULL), MAKEINTRESOURCEW(IDI_APP_ICON));
-    
-    // Fallback if resource icon missing
     if (!nid.hIcon) nid.hIcon = LoadIcon(NULL, IDI_SHIELD);
-    
     wcscpy_s(nid.szTip, APP_TITLE);
-    
-    // Unique GUID for the tray icon to ensure consistent behavior across reboots
     static const GUID myGuid = { 0x6e914148, 0x2aa2, 0x4e93, { 0x8c, 0x1c, 0x5f, 0x63, 0x80, 0xfc, 0x45, 0x0e } };
     nid.guidItem = myGuid;
-
     Shell_NotifyIconW(NIM_ADD, &nid);
     nid.uVersion = NOTIFYICON_VERSION_4;
     Shell_NotifyIconW(NIM_SETVERSION, &nid);
@@ -83,91 +124,63 @@ void ShowTrayMenu(HWND hwnd) {
     POINT cursor;
     GetCursorPos(&cursor);
     HMENU hMenu = CreatePopupMenu();
-    
-    std::wstring statusText = g_rebootPending ? L"Status: REBOOT PENDING (Intercepted)" : L"Status: Protected";
-    AppendMenuW(hMenu, MF_STRING | MF_GRAYED, ID_TRAY_STATUS, statusText.c_str());
-    
-    std::wstring updateStatus = RebootMonitor::GetStatusInfo();
-    AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 1003, updateStatus.c_str());
+
+    AppendMenuW(hMenu, MF_STRING | MF_GRAYED, ID_TRAY_STATUS, L"Status: Protecting against auto-restart");
+    AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 1003, UpdatePolicyManager::GetStatusLine().c_str());
+    AppendMenuW(hMenu, MF_STRING | MF_GRAYED, 1008, RebootMonitor::GetStatusInfo().c_str());
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
-    
+
+    UINT pauseFlags = MF_STRING | (UpdatePolicyManager::IsPauseEffectivelyActive() ? MF_CHECKED : MF_UNCHECKED);
+    AppendMenuW(hMenu, pauseFlags, ID_TRAY_PAUSE_WU, L"Pause updates (Settings — 35 days)");
+
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_RESTORE_WU, L"Give me Windows Update control back");
+    AppendMenuW(hMenu, MF_STRING, ID_TRAY_WRITE_LOG, L"Write diagnostics log");
+
+    AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+
     UINT autostartFlags = MF_STRING | (IsAutoStartEnabled() ? MF_CHECKED : MF_UNCHECKED);
     AppendMenuW(hMenu, autostartFlags, ID_TRAY_AUTOSTART, L"Start with Windows");
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
     AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"Exit Don't Reboot 11...");
 
-    
     SetForegroundWindow(hwnd);
     TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, cursor.x, cursor.y, 0, hwnd, NULL);
     DestroyMenu(hMenu);
+}
+
+void FullRestore(HWND hwnd) {
+    OrchestratorProtector::ReleaseLegacyWinRtState();
+    UpdatePolicyManager::RecoverWindowsUpdateControl();
+    RebootMonitor::ForceRefresh(hwnd);
+    ShutdownBlockReasonDestroy(hwnd);
+    ShutdownBlockReasonCreate(hwnd, BLOCK_REASON_NORMAL);
+    RefreshTrayIcon(hwnd);
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE:
         ShutdownBlockReasonCreate(hwnd, BLOCK_REASON_NORMAL);
-        // Initialize 'God Mode' Orchestrator Protection
+        OrchestratorProtector::ReleaseLegacyWinRtState();
+        UpdatePolicyManager::RecoverWindowsUpdateControl();
+        if (UpdatePolicyManager::IsPauseEnabled()) {
+            UpdatePolicyManager::EnablePause();
+        }
         OrchestratorProtector::Initialize();
-        // Start Reboot Monitor
         RebootMonitor::Start(hwnd);
         return 0;
 
-    case WM_REBOOT_STATUS_CHANGE: {
-        g_rebootPending = (bool)wParam;
-        int statusLevel = RebootMonitor::GetStatusLevel();
-        
-        // Dynamic Icon and Tooltip logic
-        if (statusLevel == 2) {
-            nid.hIcon = LoadIcon(NULL, IDI_ERROR);
-            wcscpy_s(nid.szTip, L"Don't Reboot 11: REBOOT DETECTED");
-        } else if (statusLevel == 1) {
-            nid.hIcon = LoadIcon(NULL, IDI_INFORMATION);
-            wcscpy_s(nid.szTip, L"Don't Reboot 11: Updates Active");
-        } else {
-            nid.hIcon = LoadIcon(NULL, IDI_SHIELD);
-            wcscpy_s(nid.szTip, APP_TITLE);
-        }
-        Shell_NotifyIconW(NIM_MODIFY, &nid);
-
-        if (g_rebootPending) {
-            RebootMonitor::RebootReason reason = RebootMonitor::GetLastReason();
-            std::wstring alertMsg = L"Proactive sweep detected a pending reboot. Protection has been escalated.";
-            
-            if (reason == RebootMonitor::REASON_WINDOWS_UPDATE) {
-                alertMsg = L"Proactive sweep detected a pending Windows Update reboot. Protection has been escalated.";
-            } else if (reason == RebootMonitor::REASON_SYSTEM_DRIVER) {
-                alertMsg = L"Proactive sweep detected a critical System or Driver update reboot. Protection has been escalated.";
-            }
-
-            // Update block reason to be more aggressive
-            ShutdownBlockReasonDestroy(hwnd);
-            ShutdownBlockReasonCreate(hwnd, BLOCK_REASON_PENDING);
-            
-            // Pop the alert toast
-            NotificationWindow::Show(L"DEFENSE ALERT", alertMsg.c_str(), NotificationWindow::TYPE_ALERT);
-            
-            // Update Tray Tooltip
-            wcscpy_s(nid.szTip, L"Don't Reboot 11: REBOOT DETECTED");
-            Shell_NotifyIconW(NIM_MODIFY, &nid);
-        } else {
-            ShutdownBlockReasonDestroy(hwnd);
-            ShutdownBlockReasonCreate(hwnd, BLOCK_REASON_NORMAL);
-            wcscpy_s(nid.szTip, APP_TITLE);
-            Shell_NotifyIconW(NIM_MODIFY, &nid);
-        }
+    case WM_REBOOT_STATUS_CHANGE:
+        RefreshTrayIcon(hwnd);
         return 0;
-    }
 
     case WM_TRAY_MSG:
         switch (LOWORD(lParam)) {
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU:
             ShowTrayMenu(hwnd);
-            break;
-        case NIN_BALLOONUSERCLICK:
-            // Handle tray notification clicks if any
             break;
         }
         return 0;
@@ -178,25 +191,73 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         } else if (LOWORD(wParam) == ID_TRAY_AUTOSTART) {
             bool newState = !IsAutoStartEnabled();
             SetAutoStart(newState);
-            // Optional: Show status feedback
-            if (newState) {
-                NotificationWindow::Show(L"Persistence Enabled", L"Don't Reboot 11 will now start automatically with Windows.");
+            NotificationWindow::Show(
+                newState ? L"Autostart on" : L"Autostart off",
+                newState ? L"Don't Reboot 11 will start with Windows." : L"Autostart disabled.",
+                NotificationWindow::TYPE_INFO);
+        } else if (LOWORD(wParam) == ID_TRAY_PAUSE_WU) {
+            UpdatePolicyManager::PolicyResult r;
+            std::wstring title;
+            std::wstring body;
+            if (UpdatePolicyManager::IsPauseEffectivelyActive()) {
+                r = UpdatePolicyManager::DisablePause();
+                title = L"Pause off";
+                body = L"Updates are no longer paused.";
             } else {
-                NotificationWindow::Show(L"Persistence Disabled", L"Don't Reboot 11 will no longer start automatically.");
+                r = UpdatePolicyManager::EnablePause();
+                title = L"Updates paused";
+                body = L"Paused for up to 35 days (Settings-style). Turn off pause to install updates.";
+            }
+            if (r != UpdatePolicyManager::PolicyResult::Ok) {
+                body = PolicyResultMessage(r);
+            }
+            NotificationWindow::Show(title, body, NotificationWindow::TYPE_INFO);
+        } else if (LOWORD(wParam) == ID_TRAY_RESTORE_WU) {
+            if (IsElevated()) {
+                FullRestore(hwnd);
+                const auto logPath = Diagnostics::WriteReport(L"Restore Windows Update control");
+                if (!logPath.empty()) {
+                    NotificationWindow::Show(L"Windows Update restored",
+                        L"Restore completed.\nA diagnostics log was written next to the exe:\n" + logPath,
+                        NotificationWindow::TYPE_INFO);
+                } else {
+                    NotificationWindow::Show(L"Windows Update restored",
+                        L"Restore completed.\n(Unable to write diagnostics log file.)",
+                        NotificationWindow::TYPE_INFO);
+                }
+            } else {
+                RelaunchElevated(hwnd, L"--restore-wu");
+            }
+        } else if (LOWORD(wParam) == ID_TRAY_WRITE_LOG) {
+            const auto logPath = Diagnostics::WriteReport(L"User requested diagnostics");
+            if (!logPath.empty()) {
+                NotificationWindow::Show(L"Diagnostics written",
+                    L"Saved next to dontreboot11.exe:\n" + logPath,
+                    NotificationWindow::TYPE_INFO);
+            } else {
+                NotificationWindow::Show(L"Diagnostics failed",
+                    L"Could not write a log next to dontreboot11.exe.",
+                    NotificationWindow::TYPE_ALERT);
+            }
+        } else if (LOWORD(wParam) == ID_REBOOT_TRIGGERED) {
+            g_userAuthorizedReboot = true;
+            OrchestratorProtector::ReleaseLegacyWinRtState();
+            ShutdownBlockReasonDestroy(hwnd);
+            if (!ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG, 0)) {
+                system("shutdown /r /t 5 /c \"Don't Reboot 11: authorized reboot\"");
             }
         }
         return 0;
 
-
     case WM_QUERYENDSESSION:
-        // Premium behavior: Show custom persistent toast
-        NotificationWindow::Show(L"Reboot Blocked", L"An automated Windows Update reboot attempt was intercepted. Your session is safe.");
-        
-        // Return FALSE to tell Windows we are blocking the shutdown
-        return FALSE;
+        // ShutdownBlockReasonCreate handles restart prompts; do not cancel user shutdown here.
+        UNREFERENCED_PARAMETER(g_userAuthorizedReboot);
+        return TRUE;
 
     case WM_DESTROY:
         RebootMonitor::Stop();
+        OrchestratorProtector::Shutdown();
+        UpdatePolicyManager::RecoverWindowsUpdateControl();
         ShutdownBlockReasonDestroy(hwnd);
         Shell_NotifyIconW(NIM_DELETE, &nid);
         PostQuitMessage(0);
@@ -205,18 +266,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int nCmdShow) {
-    UNREFERENCED_PARAMETER(hPrevInstance);
-    UNREFERENCED_PARAMETER(lpCmdLine);
-    UNREFERENCED_PARAMETER(nCmdShow);
+int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR lpCmdLine, int) {
+    // Check if command line requests restore
+    if (lpCmdLine && wcsstr(lpCmdLine, L"--restore-wu") != nullptr) {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        if (IsElevated()) {
+            OrchestratorProtector::ReleaseLegacyWinRtState();
+            UpdatePolicyManager::RecoverWindowsUpdateControl();
+            const auto logPath = Diagnostics::WriteReport(L"Command-line restore (elevated)");
+            std::wstring msg = L"Windows Update control has been successfully restored!\n\nAll policy locks have been removed, the WinRT administration registration has been cleared, and the Windows Update cache has been refreshed.\n\nPlease check Windows Update in Settings.";
+            if (!logPath.empty()) {
+                msg += L"\n\nDiagnostics log written to:\n" + logPath;
+            }
+            MessageBoxW(NULL, msg.c_str(), APP_TITLE, MB_OK | MB_ICONINFORMATION);
+        } else {
+            RelaunchElevated(NULL, L"--restore-wu");
+        }
+        return 0;
+    }
 
-    // Initialize WinRT MTA context for God Mode
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
-
-    // Modern DPI Awareness (Win 10/11)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-    // Enable Visual Styles
     InitCommonControls();
 
     NotificationWindow::RegisterClass(hInstance);
@@ -240,7 +310,5 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmd
         DispatchMessage(&msg);
     }
 
-    RebootMonitor::Stop();
-    OrchestratorProtector::Shutdown();
     return (int)msg.wParam;
 }
